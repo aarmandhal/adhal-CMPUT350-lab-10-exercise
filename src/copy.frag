@@ -3,5 +3,6 @@
 uniform sampler2D toCopy;
 
 void main() {
-    // TODO (reprojection)
+    // Forward whatever's in the given texture
+    gl_FragColor = texture2D(toCopy, gl_TexCoord[0].xy);
 }

@@ -1,5 +1,7 @@
+#include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <utility>
 
 #include "open_sans_semibold.h"
 #include <SFML/Graphics.hpp>
@@ -38,7 +40,21 @@ int main() {
     fullscreenTriangle[2].texCoords = {0, 2};
     // load vertex and fragment shaders:
     sf::Shader shader(std::filesystem::path{"main.vert"}, std::filesystem::path{"main.frag"});
-    // ... other shaders can go here...
+
+    // Second shader + render-texture pair for reprojection
+    sf::Shader copyShader(std::filesystem::path{"main.vert"}, std::filesystem::path{"copy.frag"});
+
+    // Double buffered render targets so last frame's image is still readable as lastFrame while
+    // this frame is being rendered into the other one.
+    sf::RenderTexture renderTextures[2];
+    for (auto& rt : renderTextures) {
+        if (!rt.resize(window.getSize())) {
+            std::cerr << "Failed to create render texture\n";
+            return 1;
+        }
+        rt.setSmooth(true);
+    }
+    int frontIdx = 0, backIdx = 1;
 
     sf::Font openSansFont(EmbeddedFonts::OpenSans_SemiBold_ttf,
                           EmbeddedFonts::OpenSans_SemiBold_ttf_len);
@@ -56,6 +72,12 @@ int main() {
     float worldUnitsPerPixel = 1.f / window.getSize().y;
     sf::Vector2f camCenterWorld{0.f, 0.f};
     int maxIters = INIT_ITERS;
+
+    // Previous frame's camera/c state, for reprojecting world coordinates back into last frame's
+    // render texture.
+    sf::Vector2f oldCamCenterWorld = camCenterWorld;
+    float oldWorldUnitsPerPixel = worldUnitsPerPixel;
+    sf::Vector2f oldC = c;
 
     int i = -1;
     while (window.isOpen()) {
@@ -113,18 +135,46 @@ int main() {
         } else {
             maxIters = std::min(maxIters * 2, TRUE_MAX_ITERS);
         }
-        // TODO set shader uniforms here...
 
+        // c only changes via WASD above
+        bool cChanged = (i == 0) || (c.x != oldC.x) || (c.y != oldC.y);
+
+        // Set this frame's camera/c state, plus last frame's state and buffer, so the shader can
+        // reproject and blend old samples with newly computed ones.
+        shader.setUniform("c", sf::Glsl::Vec2(c.x, c.y));
+        shader.setUniform("MAX_ITERS", maxIters);
+        shader.setUniform("windowSizePixels",
+                          sf::Glsl::Vec2(static_cast<float>(window.getSize().x),
+                                         static_cast<float>(window.getSize().y)));
+        shader.setUniform("camCenterWorld", sf::Glsl::Vec2(camCenterWorld.x, camCenterWorld.y));
+        shader.setUniform("camWorldUnitsPerPixel", worldUnitsPerPixel);
+        shader.setUniform("oldCamCenterWorld",
+                          sf::Glsl::Vec2(oldCamCenterWorld.x, oldCamCenterWorld.y));
+        shader.setUniform("oldCamWorldUnitsPerPixel", oldWorldUnitsPerPixel);
+        shader.setUniform("cChanged", cChanged);
+        shader.setUniform("lastFrame", renderTextures[frontIdx].getTexture());
+
+        // Render this frame into the back buffer rather than straight to the window, so next frame
+        // can read it back as "lastFrame" for reprojection.
+        renderTextures[backIdx].clear(sf::Color::Black);
+        renderTextures[backIdx].draw(fullscreenTriangle, &shader);
+        renderTextures[backIdx].display();
+
+        // Blit the back buffer's result onto the actual window.
+        copyShader.setUniform("toCopy", renderTextures[backIdx].getTexture());
         window.clear(sf::Color::Black);
-        // TODO something.draw(fullscreenTriangle, &shader);
-        // this might change as you finish more parts!
+        window.draw(fullscreenTriangle, &copyShader);
         cText.setString("c = (" + std::to_string(c.x) + ", " + std::to_string(c.y) + ")");
         cTextShadow.setString("c = (" + std::to_string(c.x) + ", " + std::to_string(c.y) + ")");
         window.draw(cTextShadow);
         window.draw(cText);
         window.display();
 
-        // TODO (reprojection)... update "old" states
+        // Advance to next frame
+        std::swap(frontIdx, backIdx);
+        oldCamCenterWorld = camCenterWorld;
+        oldWorldUnitsPerPixel = worldUnitsPerPixel;
+        oldC = c;
     }
     return 0;
 }
